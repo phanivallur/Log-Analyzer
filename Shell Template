@@ -1,0 +1,188 @@
+#!/bin/bash
+#:######################################################################################
+#: CODING CONVENTIONS
+#:  - No TABS, please use spaces with tab width as 2
+#:
+#: Sample usage for only alias verification:
+#:    ./bdm-es-index-alias.sh -c -l node_username -a node_password
+#:######################################################################################
+#: Please update the versions
+_version=3
+set -x
+#:default environment (DEV|TEST|PRD|DR)
+#IMPLEMENTATION_ENVIRONMENT=
+#:--  ARG Parsing - DO NOT MODIFY unless you know what you are doing.
+#:---
+
+while getopts :hce:l:a: PARAM 2>/dev/null
+do
+  case ${PARAM} in
+    h)
+      _usage $0
+      ;;
+    c)
+      CONSOLE_LOG=yes
+      ;;
+    d)
+      INPUT_DATE=$OPTARG
+      ;;
+   \?)
+      echo "unrecognized option: ${PARAM}"
+      _usage $0
+      ;;
+  esac
+done
+
+
+#: log file name
+SCR_FILENAME=$(basename $0)
+SCR_NAME="${SCR_FILENAME%.*}"
+#ENV_DIR=$(echo "${IMPLEMENTATION_ENVIRONMENT}" | tr '[:upper:]' '[:lower:]')
+
+MACHINE_NAME=$(echo $HOSTNAME)
+case "${MACHINE_NAME}" in
+    omhqp133b2*|omhqp133b3*)
+        ENV_DIR="dev"
+        ;;
+    omhqp11b40*|omhqp130dd*|omhqp130de*)
+        ENV_DIR="prd"
+        ;;
+    DR)
+        ENV_DIR="dr"
+        ;;
+    omsdp138d1*|omsdp138d2*)
+        ENV_DIR="tst"
+        ;;
+      *)
+        log_it "[WARNING]: This machine does not belong to any cluster. Exiting the script.. "
+        exit 1
+        ;;
+esac
+
+LOGDIR=/logs/bdm/${SCR_NAME}/${ENV_DIR}
+NOW=$(date +"%F-%H%M%S")
+OLD_LOG_COUNT=$(find ${LOGDIR} -type f -name "*.log" | wc -l)
+if [[ ${OLD_LOG_COUNT} -gt 0 ]]
+then
+ while read log_file
+ do
+  #file_name=$(basename ${log_file})
+  #gzip -f ${file_name}
+  gzip -f ${log_file}
+ done< <(find ${LOGDIR} -type f -name "*.log")
+fi
+LOGFILE=${LOGDIR}/${SCR_NAME}_${NOW}.log
+#:OUTPUT to CONSOLE
+CONSOLE_LOG=no
+mkdir -p $LOGDIR || { echo "could not create $LOGDIR"; exit 1; }
+echo "All output will be available in $LOGFILE"
+if [ ! -f $LOGFILE ]
+then
+   touch ${LOGFILE}
+fi
+#:--------------------------------------------------------
+#:log_it()  log messages to a file or stdout
+#:--------------------------------------------------------
+function log_it(){
+  if [ "$CONSOLE_LOG" = "yes" ]
+  then
+    echo "[$(date +'%Y-%m-%dT%H:%M:%S%z')]: $@"
+  else
+    echo "[$(date +'%Y-%m-%dT%H:%M:%S%z')]: $@" >> "${LOGFILE}" 2>&1
+  fi
+  #: Always return success
+  return 0
+}
+
+#:--------------------------------------------------------
+#: USAGE and ARGS Parsing - BEGIN
+#:--------------------------------------------------------
+_usage() {
+  local _status=${1:1}
+cat <<EOF
+  ${SCR_FILENAME} Version: ${_version}
+  ${SCR_FILENAME} [OPTIONS]
+  -h               help
+  -c               output to console
+  -e               override host based environment configuration values must be [DEV|TEST|PRD|DR]
+  -l               Node username to  be used to connect to specific node
+  -a               Node password to be used to connect to specific node
+EOF
+  exit ${_status}
+}
+
+
+function untarInputFile(){
+   local in_file=$1
+   
+   source_file=$(basename ${in_file})
+   tar -x "${in_file}" || {
+      log_it "Error while extracting the tar file. . . Exiting script"
+      exit 1
+   }
+}
+
+
+function copyToLocal() {
+   local in_tar=$1
+   local rootPath=$2
+   local in_year=$3
+   
+   while read tarfile
+   do
+     rm -f $tarfile
+   done < <(find $rootPath -type f -name "*.tar")
+   
+    
+   while read folder
+   do
+    rm -rf $folder
+   done < <(find $rootPath -type d -name "${input_year}")
+   
+   hadoop fs -copyToLocal "${in_tar}" "${rootPath}" || {
+      log_it "Tar file could not be copied to local path..Exiting"
+      exit 1
+   }
+   
+   untarInputFile "${in_tar}"
+}
+
+
+  
+  
+
+
+
+
+#:###################################################################################
+#:                              Main Program
+#:###################################################################################
+
+function Main() {
+
+  #create a  list of all bz2 files
+  declare -a _list=()
+  input_tar=
+  input_year=
+  rootDir="/transfer/bdm/"
+  
+  if [[ -Z  ${INPUT_DATE} ]]
+  then
+   log_it "Input date should be provided. Please run the script again with input date"
+   exit 1
+  fi 
+  
+  input_year=$(echo $INPUT_DATE | cut -c1-4)
+   
+  input_tar=$(hadoop fs -ls /data/prptc/hacc/ma/raw |grep -v _Logfile |grep -i ${INPUT_DATE} | head -1)
+ 
+  copyToLocal "${input_tar}" "${rootDir}" "${input_year}"
+
+  while read file
+  do
+    _list[${#_list[@]}]=$(basename ${file})
+  done< <(find $rootDir$input_year -type f -name "*.bz2")   
+}
+
+Main
+exit $?
